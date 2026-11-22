@@ -1,133 +1,146 @@
 # Symulacja grawitacyjnego problemu N-ciał
 
-Porównanie wydajności trzech implementacji tego samego algorytmu
-(bezpośrednia metoda O(N²) + integrator leapfrog):
+Projekt na przedmiot Akceleracja i obliczanie danych. Porównuje bezpośrednią
+metodę O(N²) z integratorem leapfrog (kick-drift-kick) w czterech wariantach:
 
-| Wariant | Plik | Status |
-|---|---|---|
-| CPU sekwencyjnie | `src/nbody_seq.cpp` | ✅ gotowe, przetestowane |
-| CPU + OpenMP | `src/nbody_openmp.cpp` | ✅ gotowe, przetestowane |
-| GPU + CUDA (wersja podstawowa) | `src/nbody_cuda.cu` | ⚠️ napisane, **nieprzetestowane** (wymaga karty NVIDIA) |
-| GPU + CUDA (tiling `__shared__`) | — | ⏳ do zrobienia |
-
-## Struktura
-
-```
-include/
-  body.hpp          dane ciał (SoA), parametry fizyczne, typ `real` (float/double)
-  simulation.hpp    wspólny interfejs + funkcja sił accel_on_body (__host__ __device__)
-  benchmark.hpp     pomiar czasu: rozgrzewka, powtórzenia, mediana
-src/
-  main.cpp          argumenty, testy poprawności, benchmark -> CSV
-  simulation.cpp    warunki początkowe, energia, pęd, porównywanie wyników
-  nbody_seq.cpp     wariant sekwencyjny (wzorzec)
-  nbody_openmp.cpp  wariant OpenMP
-  nbody_cuda.cu     wariant CUDA (budowany z -DUSE_CUDA=ON)
-  nbody_cuda_stub.cpp  zaślepka, gdy budujemy bez CUDA (np. macOS)
-```
-
-## Sprzęt pomiarowy
-
-Wszystkie pomiary robimy na **jednym komputerze**, żeby porównanie CPU i GPU było uczciwe:
-
-| | |
+| Tryb | Implementacja |
 |---|---|
-| CPU | AMD Ryzen 7 9800X3D: 8 rdzeni / 16 wątków, Zen 5 (AVX-512), 96 MB L3 |
-| GPU | NVIDIA GeForce RTX 5070: Blackwell, compute capability 12.0 (`sm_120`) |
-| System | Windows |
+| `seq` | CPU sekwencyjnie, punkt odniesienia |
+| `omp` | CPU + OpenMP, równoległa pętla po ciałach |
+| `cuda-naive` | CUDA, jeden wątek na ciało, dane z pamięci globalnej |
+| `cuda` | CUDA, kafle po 256 ciał w pamięci `__shared__` |
 
-Konsekwencje dla projektu:
-- **CUDA Toolkit ≥ 12.8.** Starsze wersje nie znają `sm_120`. Najlepiej zainstalować najnowszą (13.x).
-- **`float` jako domyślny typ.** Karty GeForce liczą `double` ok. 64× wolniej niż `float`.
-  Pomiar wersji GPU w `double` (`-DNBODY_USE_FLOAT=OFF`) może być ciekawym dodatkiem do sprawozdania.
-- **OpenMP mierzymy dla 1, 2, 4, 8 i 16 wątków.** Powyżej 8 są już wątki SMT na tych samych rdzeniach,
-  więc warto pokazać, ile to daje.
-- **Dane mieszczą się w cache L3.** Nawet przy N = 65536 to tylko ok. 2,6 MB, więc wersja CPU jest
-  ograniczona obliczeniami, a nie pamięcią RAM.
+`all` uruchamia wszystkie dostępne warianty. Bez CUDA pomija oba warianty GPU.
+Bez OpenMP `omp` działa na jednym wątku. Dane mają układ SoA; wszystkie warianty
+używają tego samego wzoru siły, softeningu oraz identycznych warunków początkowych.
 
-## Budowanie
+## Budowanie i testy
 
-### Windows z CUDA (komputer pomiarowy)
+Wymagania: CMake ≥ 3.24, kompilator C++20. CUDA jest opcjonalna.
+Na Windows do CUDA potrzebny jest MSVC oraz CUDA Toolkit obsługujący kartę.
+Dla komputera pomiarowego (Ryzen 7 9800X3D, RTX 5070) używamy architektury `120`.
 
-1. Zainstaluj **Visual Studio 2022 Build Tools** z obciążeniem *Desktop development with C++*.
-   nvcc na Windowsie działa tylko z MSVC, nie z MinGW.
-2. Zainstaluj **CUDA Toolkit** (≥ 12.8, najlepiej najnowszy) i aktualny sterownik NVIDIA.
-3. W CLion:
-   - *Settings → Build, Execution, Deployment → Toolchains*: dodaj **Visual Studio** i przesuń go na górę listy,
-   - *Settings → … → CMake*: dodaj profil **Release** z opcją `-DUSE_CUDA=ON`.
-4. Zbuduj i uruchom `nbody` z argumentem `--mode test`. Test nr 4 powinien pokazać nazwę karty.
-
-Z linii poleceń (*x64 Native Tools Command Prompt for VS*):
+Windows, **x64 Native Tools Command Prompt for VS 2022**:
 
 ```bat
-cmake -S . -B build -DUSE_CUDA=ON
+cmake -S . -B build -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 build\Release\nbody.exe --mode test
 ```
 
-Pomiary CPU i GPU róbcie z **tej samej** kompilacji (MSVC). Wyniki z różnych kompilatorów
-(MSVC i MinGW/GCC) nie są wprost porównywalne.
-
-### Bez GPU (macOS / Linux / Windows z MinGW)
+Bez GPU (Linux, macOS, Windows):
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-**macOS:** OpenMP wymaga `brew install libomp`. CMake znajdzie go sam.
+Na macOS OpenMP wymaga `brew install libomp`.
+W CLion wybierz toolchain Visual Studio do CUDA oraz profil Release.
 
-### Opcje CMake
+Jeżeli wykrywanie kompilatora MSVC kończy się błędem C1902, sprawdzona alternatywa
+to generator Ninja z wykrywaniem kompilatorów w konfiguracji Release
+(w terminalu narzędzi Visual Studio, z Ninja w PATH):
 
-| opcja | domyślnie | znaczenie |
+```bat
+cmake -S . -B build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TRY_COMPILE_CONFIGURATION=Release -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
+cmake --build build-ninja
+ctest --test-dir build-ninja --output-on-failure
+```
+
+| Opcja CMake | Domyślnie | Znaczenie |
 |---|---|---|
-| `USE_CUDA` | `OFF` | buduje wariant GPU |
-| `NBODY_USE_FLOAT` | `ON` | `float` zamiast `double` |
-| `NBODY_NATIVE` | `ON` | instrukcje wektorowe procesora (`-march=native`, w MSVC `/arch:AVX2`) |
-| `CMAKE_CUDA_ARCHITECTURES` | `native` | architektura GPU; dla RTX 5070 to `120` |
+| `USE_CUDA` | `OFF` | budowanie obu wariantów CUDA |
+| `NBODY_USE_FLOAT` | `ON` | `float`; ustaw `OFF` dla `double` |
+| `NBODY_NATIVE` | `ON` | instrukcje CPU: `-march=native` lub MSVC `/arch:AVX2` |
+| `CMAKE_CUDA_ARCHITECTURES` | `native` | architektura GPU; można ustawić jawnie |
+| `BUILD_TESTING` | `ON` | testy CTest |
+
+Testy obejmują orbitę dwóch ciał, energię, pęd, zgodność CPU/OpenMP/obu kerneli
+CUDA oraz pełny stan (pozycje, prędkości, przyspieszenia). Przypadki brzegowe:
+N = 0, 1, 2, 31, 255, 256, 257, 513 i 0/1/7 kroków. Testy GPU wykonują się,
+gdy karta jest dostępna; brak GPU jest jawnie zgłaszany. Python 3.10+ dodaje
+testy CLI/CSV oraz analizy pomiarów. CI sprawdza CPU na Windows i Linux,
+we float i double, oraz wariant bez OpenMP.
 
 ## Uruchamianie
 
-```bash
-# testy poprawności (orbita 2 ciał, energia, pęd, OpenMP/CUDA vs seq)
-./build/nbody --mode test          # albo: ctest --test-dir build
+Przykłady dla Windows (Linux/macOS: zastąp ścieżkę programu przez `./build/nbody`):
 
-# benchmark wszystkich wariantów, kilka rozmiarów, z kontrolą poprawności
-./build/nbody --mode all --n 1024,2048,4096 --steps 10 --repeats 5 --check
-
-# skalowanie OpenMP względem liczby wątków, zapis do CSV
-./build/nbody --mode omp --n 8192 --threads 1,2,4,8,16 --csv results/omp.csv
+```bat
+build\Release\nbody.exe --mode all --n 256,1024,4096 --threads 1,2,4,8,16 --steps 10 --repeats 5 --check --csv results\benchmark.csv
+build\Release\nbody.exe --mode cuda --n 65536 --steps 100
+build\Release\nbody.exe --mode cuda-naive --n 65536 --steps 100
+build\Release\nbody.exe --help
 ```
 
-`./build/nbody --help` pokazuje wszystkie opcje.
+Opcje: `--mode`, `--n`, `--threads`, `--steps`, `--repeats`, `--warmup`,
+`--seed`, `--dt`, `--eps`, `--check`, `--csv`.
+Domyślnie: N=1024, 10 kroków, 5 powtórzeń, 1 rozgrzewka, seed=42,
+dt=0.001, eps=0.01. Liczby ciał, wątków, kroków i powtórzeń muszą być dodatnie;
+rozgrzewka może wynosić zero. Parametry fizyczne muszą być skończone.
+Zbyt mały softening dla wybranego typu jest odrzucany.
 
-### Kolumny CSV
+Program tworzy katalog docelowego CSV i dopisuje wiersze bez powielania nagłówka.
+Odrzuca dopisywanie do starszego formatu CSV. Informacje diagnostyczne trafiają
+na stderr, więc stdout pozostaje poprawnym CSV. `--check` dodatkowo oblicza
+energię i wynik referencyjny seq poza pomiarem czasu.
 
-| kolumna | znaczenie |
+## Seria pomiarów i wykresy
+
+Skrypty wymagają Pythona 3.10+. Tylko wykresy wymagają matplotlib:
+
+```bat
+python -m pip install -r requirements-analysis.txt
+python scripts\benchmark.py build\Release\nbody.exe --n 256,512,1024,2048,4096,8192,16384 --threads 1,2,4,8,16 --steps 10 --repeats 5 --csv results\benchmark.csv
+python scripts\analyze.py results\benchmark.csv --output results\analysis
+```
+
+Powstają `summary.csv` oraz `comparison.png`: czas, przyspieszenie,
+efektywność OpenMP i udział transferów CUDA. Opcja `--no-plots` zapisuje tylko
+podsumowanie CSV i działa bez matplotlib. Skrypt serii pomiarowej wymaga nowej
+ścieżki CSV, aby nie mieszać eksperymentów.
+
+Analiza łączy wyłącznie pomiary z identycznymi real/steps/seed/dt/eps.
+Przyspieszenie wymaga seq z tym samym N; przy braku takiej bazy pole pozostaje
+puste. Wiele pomiarów tej samej konfiguracji agreguje medianą ich median.
+Dla N=32768/65536 można zmniejszyć liczbę kroków, ale **wszystkie porównywane
+warianty dla danego N muszą mieć tę samą liczbę kroków**. Różne konfiguracje
+analizuj oddzielnymi poleceniami. Pomiary porównuj w jednej kompilacji Release,
+przy nieobciążonym komputerze; testy poprawności uruchom wcześniej.
+
+## Znaczenie wyników
+
+| Kolumny | Znaczenie |
 |---|---|
-| `median_s`, `min_s`, `max_s`, `mean_s` | czas całej symulacji (`steps` kroków) |
-| `ms_per_step` | mediana / liczba kroków |
-| `ginteractions_per_s` | N² · kroki / czas, w miliardach |
-| `energy_rel_drift` | względna zmiana energii (tylko z `--check`) |
-| `max_diff_vs_seq` | maks. różnica położeń względem wersji sekwencyjnej (`--check`) |
-| `cuda_h2d_s`, `cuda_kernel_s`, `cuda_d2h_s` | transfer na GPU, obliczenia, transfer z GPU |
+| `mode,real,n,steps,threads,repeats` | wariant, precyzja i rozmiar zadania; threads dotyczy CPU |
+| `median_s,min_s,max_s,mean_s` | czas całej symulacji, bez kopiowania stanu początkowego na CPU |
+| `ms_per_step` | mediana czasu całości / liczba kroków |
+| `ginteractions_per_s` | N² × (steps + 1) / czas / 10⁹, wlicza początkowy przebieg sił |
+| `energy_rel_drift` | względna zmiana energii; pusta bez check lub gdy energia początkowa = 0 |
+| `max_diff_vs_seq` | maksymalna odległość pozycji od seq po ostatnim powtórzeniu; tylko z check |
+| `cuda_h2d_s,cuda_kernel_s,cuda_d2h_s` | średnie czasy faz GPU z cudaEvent; bez rozgrzewek |
+| `seed,dt,eps` | parametry potrzebne do odtworzenia eksperymentu |
 
-## Ważne decyzje
+Całkowity czas CUDA obejmuje również alokację/zwalnianie pamięci i obsługę
+wywołań na CPU. Czasy faz z cudaEvent nie muszą sumować się do czasu całości.
+Dane trafiają na GPU raz, wszystkie kroki liczone są na karcie, wynik wraca raz.
+Udział transferów w analizie = (średni H2D + średni D2H) / średni czas całości.
 
-- **Ten sam kod fizyki wszędzie:** `accel_on_body()` w `simulation.hpp` wołają
-  wszystkie trzy warianty (w CUDA jako funkcja `__device__`).
-- **Softening `eps > 0`:** człon i == j daje wtedy 0, więc pętla nie ma `if`.
-- **Leapfrog (kick-drift-kick):** dobrze zachowuje energię; testy to sprawdzają.
-- **Własny generator liczb z `mt19937_64`:** identyczne dane wejściowe na każdym systemie.
-- **`-fno-math-errno`:** bez tej flagi GCC nie wektoryzował pętli sił w wersji
-  OpenMP i ta na 1 wątku była ~2× wolniejsza od sekwencyjnej. Warto o tym
-  wspomnieć w sprawozdaniu.
-- **Brak `-ffast-math`:** wyniki CPU i GPU mają być porównywalne.
+## Struktura i dalsza praca
 
-## Następne kroki
+- `include/`: stan SoA, wspólny wzór siły, interfejs i timer.
+- `src/`: inicjalizacja, fizyka, CLI i cztery implementacje.
+- `tests/`: testy stanu, argumentów, CSV i obliczeń analitycznych.
+- `scripts/`: seria pomiarów oraz analiza i wykresy.
+- `PLAN.md`: stan realizacji i zadania eksperymentalne do sprawozdania.
 
-1. Zbudować z `-DUSE_CUDA=ON` na komputerze z NVIDIA i uruchomić `--mode test`.
-2. Napisać kernel z tilingiem w pamięci `__shared__` i porównać z wersją podstawową.
-3. Profilowanie: `nsys profile ./build/nbody --mode cuda --n 65536`, `ncu`.
-4. Seria pomiarów (N = 256 … 65536, różna liczba wątków) do CSV.
-5. Skrypt w Pythonie do wykresów: czas, przyspieszenie, efektywność, udział transferów.
+Profilowanie, gdy dostępne są narzędzia NVIDIA:
+
+```bat
+nsys profile -o nbody-profile build\Release\nbody.exe --mode cuda --n 65536 --steps 100 --repeats 1
+ncu --set full build\Release\nbody.exe --mode cuda --n 65536 --steps 10 --repeats 1 --warmup 0
+compute-sanitizer --tool memcheck --error-exitcode 1 build\Release\nbody_tests.exe
+```

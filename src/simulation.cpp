@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <limits>
+#include <stdexcept>
 
 namespace nbody {
 
@@ -29,6 +31,7 @@ void random_in_ball(std::mt19937_64& rng, double& x, double& y, double& z) {
 
 Bodies make_random(std::size_t n, std::uint64_t seed) {
     Bodies b(n);
+    if (n == 0) return b;
     std::mt19937_64 rng(seed);
 
     std::vector<double> px(n), py(n), pz(n), vx(n), vy(n), vz(n);
@@ -100,14 +103,35 @@ double momentum_magnitude(const Bodies& b) {
     return std::sqrt(px * px + py * py + pz * pz);
 }
 
+void validate_simulation(const Bodies& b, const Params& p, int steps) {
+    if (steps < 0) throw std::invalid_argument("Liczba krokow nie moze byc ujemna");
+    if (!std::isfinite(p.G) || p.G < 0 || !std::isfinite(p.dt) || p.dt <= 0 ||
+        !std::isfinite(p.eps) || p.eps <= 0 ||
+        !std::isfinite(p.eps * p.eps) || p.eps * p.eps == 0)
+        throw std::invalid_argument("Wymagane skonczone G >= 0, dt > 0 i eps > 0");
+    const real inv_eps = real(1) / std::sqrt(p.eps * p.eps);
+    if (!std::isfinite(inv_eps * inv_eps * inv_eps))
+        throw std::invalid_argument("Softening eps jest za maly dla wybranego typu real");
+    for (const auto* v : {&b.x, &b.y, &b.z, &b.vx, &b.vy, &b.vz,
+                          &b.ax, &b.ay, &b.az})
+        if (v->size() != b.size())
+            throw std::invalid_argument("Tablice Bodies musza miec jednakowy rozmiar");
+}
+
 double max_position_diff(const Bodies& a, const Bodies& b) {
+    if (a.size() != b.size())
+        throw std::invalid_argument("Porownywane uklady maja rozne rozmiary");
+    validate_simulation(a, Params{}, 0);
+    validate_simulation(b, Params{}, 0);
     double d = 0;
-    const std::size_t n = std::min(a.size(), b.size());
+    const std::size_t n = a.size();
     for (std::size_t i = 0; i < n; ++i) {
         const double dx = double(a.x[i]) - b.x[i];
         const double dy = double(a.y[i]) - b.y[i];
         const double dz = double(a.z[i]) - b.z[i];
-        d = std::max(d, std::sqrt(dx * dx + dy * dy + dz * dz));
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!std::isfinite(distance)) return std::numeric_limits<double>::infinity();
+        d = std::max(d, distance);
     }
     return d;
 }

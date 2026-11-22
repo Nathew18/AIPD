@@ -36,6 +36,7 @@ void drift(Bodies& b, real h) {
 // Leapfrog KDK: pół kroku prędkości, pełny krok położenia,
 // nowe przyspieszenia, drugie pół kroku prędkości.
 void run_seq(Bodies& b, const Params& p, int steps) {
+    validate_simulation(b, p, steps);
     const real half = p.dt * real(0.5);
     compute_accelerations(b, p);
     for (int s = 0; s < steps; ++s) {

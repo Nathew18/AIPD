@@ -1,16 +1,15 @@
-// Wariant 3: GPU + CUDA - wersja podstawowa (Krok 6, wersja 1).
+// Warianty GPU: kernel podstawowy oraz tiling w pamieci wspoldzielonej.
 //   * jeden wątek GPU = jedno ciało,
 //   * dane kopiowane na GPU RAZ, wszystkie kroki liczone na karcie,
 //   * osobny pomiar transferów i obliczeń (cudaEvent).
 //
-// TODO (Krok 6, wersja 2): kernel z tilingiem w pamięci __shared__
-//      i porównanie z tą wersją.
 #include "simulation.hpp"
 
 #include <cuda_runtime.h>
 
 #include <stdexcept>
 #include <string>
+#include <limits>
 
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -30,6 +29,19 @@ struct DeviceBodies {
     real *x, *y, *z, *vx, *vy, *vz, *ax, *ay, *az, *m;
 };
 
+// Jeden bufor na wszystkie tablice; sprzatanie takze po wyjatku CUDA_CHECK.
+struct Resources {
+    real* data = nullptr;
+    cudaEvent_t events[4]{};
+    ~Resources() {
+        for (auto event : events) if (event) cudaEventDestroy(event);
+        if (data) cudaFree(data);
+    }
+    Resources() = default;
+    Resources(const Resources&) = delete;
+    Resources& operator=(const Resources&) = delete;
+};
+
 // Liczy nowe przyspieszenie ciała i, potem v += a * h.
 // Przy h = 0 tylko liczy przyspieszenia (start symulacji).
 __global__ void accel_kick_kernel(int n, DeviceBodies d, real G, real eps2, real h) {
@@ -39,6 +51,38 @@ __global__ void accel_kick_kernel(int n, DeviceBodies d, real G, real eps2, real
     accel_on_body(std::size_t(i), std::size_t(n), d.x, d.y, d.z, d.m, G, eps2, ax, ay, az);
     d.ax[i] = ax; d.ay[i] = ay; d.az[i] = az;
     d.vx[i] += ax * h; d.vy[i] += ay * h; d.vz[i] += az * h;
+}
+
+__global__ void accel_kick_tiled_kernel(int n, DeviceBodies d, real G, real eps2, real h) {
+    struct Particle { real x, y, z, m; };
+    __shared__ Particle tile[kBlockSize];
+    const int lane = threadIdx.x;
+    const int i = blockIdx.x * blockDim.x + lane;
+    const bool active = i < n;
+    const real xi = active ? d.x[i] : real(0);
+    const real yi = active ? d.y[i] : real(0);
+    const real zi = active ? d.z[i] : real(0);
+    real sx = 0, sy = 0, sz = 0;
+    // Nieaktywne watki ostatniego bloku tez musza dojsc do obu barier.
+    // Indeks size_t zapobiega przepelnieniu dla ostatniego kafla.
+    for (std::size_t base = 0; base < std::size_t(n); base += kBlockSize) {
+        const std::size_t j = base + lane;
+        if (j < std::size_t(n)) tile[lane] = {d.x[j], d.y[j], d.z[j], d.m[j]};
+        __syncthreads();
+        const int count = int(std::size_t(n) - base < kBlockSize ?
+                              std::size_t(n) - base : kBlockSize);
+        if (active) {
+            for (int k = 0; k < count; ++k)
+                accumulate_pair(tile[k].x - xi, tile[k].y - yi, tile[k].z - zi,
+                                tile[k].m, eps2, sx, sy, sz);
+        }
+        __syncthreads();
+    }
+    if (active) {
+        const real ax = G * sx, ay = G * sy, az = G * sz;
+        d.ax[i] = ax; d.ay[i] = ay; d.az[i] = az;
+        d.vx[i] += ax * h; d.vy[i] += ay * h; d.vz[i] += az * h;
+    }
 }
 
 // v += a * h_kick, potem x += v * h_drift.
@@ -62,21 +106,30 @@ std::string cuda_device_name() {
     return prop.name;
 }
 
-void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings) {
+void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings, CudaKernel kernel) {
+    validate_simulation(b, p, steps);
+    if (timings) *timings = {};
+    if (b.size() == 0) return;
+    if (b.size() > std::size_t(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("CUDA: za duzo cial (limit INT_MAX)");
+    if (kernel != CudaKernel::naive && kernel != CudaKernel::tiled)
+        throw std::invalid_argument("CUDA: nieznany kernel");
     const int n = int(b.size());
     const std::size_t bytes = std::size_t(n) * sizeof(real);
     const real eps2 = p.eps * p.eps;
     const real half = p.dt * real(0.5);
-    const int grid = (n + kBlockSize - 1) / kBlockSize;
+    const int grid = (n - 1) / kBlockSize + 1;
 
     // Alokacja - poza pomiarami transferu/obliczeń.
     DeviceBodies d{};
+    Resources resources;
+    CUDA_CHECK(cudaMalloc(&resources.data, bytes * 10));
     real** ptrs[] = {&d.x, &d.y, &d.z, &d.vx, &d.vy, &d.vz, &d.ax, &d.ay, &d.az, &d.m};
-    for (real** ptr : ptrs) CUDA_CHECK(cudaMalloc(ptr, bytes));
+    for (int i = 0; i < 10; ++i) *ptrs[i] = resources.data + std::size_t(i) * n;
 
-    cudaEvent_t e0, e1, e2, e3;
-    CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
-    CUDA_CHECK(cudaEventCreate(&e2)); CUDA_CHECK(cudaEventCreate(&e3));
+    for (auto& event : resources.events) CUDA_CHECK(cudaEventCreate(&event));
+    const auto e0 = resources.events[0], e1 = resources.events[1];
+    const auto e2 = resources.events[2], e3 = resources.events[3];
 
     // --- host -> device
     CUDA_CHECK(cudaEventRecord(e0));
@@ -90,10 +143,18 @@ void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings) {
 
     // --- obliczenia (leapfrog KDK, jak w wersji CPU)
     CUDA_CHECK(cudaEventRecord(e1));
-    accel_kick_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, real(0));
+    auto accel_kick = [&](real h) {
+        if (kernel == CudaKernel::tiled)
+            accel_kick_tiled_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, h);
+        else
+            accel_kick_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, h);
+        CUDA_CHECK(cudaGetLastError());
+    };
+    accel_kick(real(0));
     for (int s = 0; s < steps; ++s) {
         kick_drift_kernel<<<grid, kBlockSize>>>(n, d, half, p.dt);
-        accel_kick_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, half);
+        CUDA_CHECK(cudaGetLastError());
+        accel_kick(half);
     }
     CUDA_CHECK(cudaGetLastError());
 
@@ -113,13 +174,11 @@ void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings) {
 
     if (timings) {
         float ms = 0;
-        cudaEventElapsedTime(&ms, e0, e1); timings->h2d_s = ms / 1000.0;
-        cudaEventElapsedTime(&ms, e1, e2); timings->kernel_s = ms / 1000.0;
-        cudaEventElapsedTime(&ms, e2, e3); timings->d2h_s = ms / 1000.0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1)); timings->h2d_s = ms / 1000.0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e1, e2)); timings->kernel_s = ms / 1000.0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e2, e3)); timings->d2h_s = ms / 1000.0;
     }
 
-    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaEventDestroy(e2); cudaEventDestroy(e3);
-    for (real** ptr : ptrs) cudaFree(*ptr);
 }
 
 } // namespace nbody

@@ -9,7 +9,7 @@ namespace nbody {
 bool cuda_available() { return false; }
 std::string cuda_device_name() { return "brak (zbudowano bez CUDA)"; }
 
-void run_cuda(Bodies&, const Params&, int, CudaTimings*) {
+void run_cuda(Bodies&, const Params&, int, CudaTimings*, CudaKernel) {
     throw std::runtime_error("Program zbudowano bez CUDA. Użyj -DUSE_CUDA=ON.");
 }
 

@@ -3,6 +3,8 @@
 // Każdy wątek zapisuje tylko przyspieszenia "swoich" ciał => brak wyścigów.
 #include "simulation.hpp"
 
+#include <stdexcept>
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -56,6 +58,8 @@ int omp_max_threads() {
 }
 
 void run_omp(Bodies& b, const Params& p, int steps, int threads) {
+    validate_simulation(b, p, steps);
+    if (threads < 0) throw std::invalid_argument("Liczba watkow nie moze byc ujemna");
 #ifdef _OPENMP
     if (threads > 0) omp_set_num_threads(threads);
 #else

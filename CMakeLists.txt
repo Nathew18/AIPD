@@ -31,7 +31,6 @@ endif()
 
 # ---------------------------------------------------------------- źródła
 set(SOURCES
-    src/main.cpp
     src/simulation.cpp
     src/nbody_seq.cpp
     src/nbody_openmp.cpp
@@ -49,30 +48,33 @@ else()
     list(APPEND SOURCES src/nbody_cuda_stub.cpp)
 endif()
 
-add_executable(nbody ${SOURCES})
-target_include_directories(nbody PRIVATE include)
+add_library(nbody_core STATIC ${SOURCES})
+target_include_directories(nbody_core PUBLIC include)
+add_executable(nbody src/main.cpp)
+target_link_libraries(nbody PRIVATE nbody_core)
 
 if(NBODY_USE_FLOAT)
-    target_compile_definitions(nbody PRIVATE NBODY_USE_FLOAT)
+    target_compile_definitions(nbody_core PUBLIC NBODY_USE_FLOAT)
 endif()
 
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(nbody PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(nbody_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
 if(USE_CUDA)
-    target_compile_definitions(nbody PRIVATE NBODY_HAS_CUDA)
+    target_compile_definitions(nbody_core PUBLIC NBODY_HAS_CUDA)
+    set_target_properties(nbody_core PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
 endif()
 
 # Optymalizacje. Bez -ffast-math, żeby wyniki CPU/GPU były porównywalne.
 # -fno-math-errno: std::sqrt nie musi ustawiać errno => pętla sił może być
 # wektoryzowana (bez tego wersja OpenMP była ~2x wolniejsza od sekwencyjnej).
 if(MSVC)
-    target_compile_options(nbody PRIVATE
+    target_compile_options(nbody_core PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/O2 /W3 /utf-8>
         $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
 else()
-    target_compile_options(nbody PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O3 -fno-math-errno -Wall -Wextra>)
+    target_compile_options(nbody_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O3 -fno-math-errno -Wall -Wextra>)
 endif()
 
 # Instrukcje wektorowe procesora (ten sam kod dla seq i omp => uczciwie).
@@ -80,19 +82,31 @@ if(NBODY_NATIVE)
     if(MSVC)
         # MSVC nie ma "native". AVX2 działa na każdym współczesnym CPU;
         # Ryzen 9800X3D (Zen 5) obsługuje też /arch:AVX512.
-        target_compile_options(nbody PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>)
+        target_compile_options(nbody_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>)
     else()
         include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag(-march=native HAS_MARCH_NATIVE)
         check_cxx_compiler_flag(-mcpu=native  HAS_MCPU_NATIVE)   # Apple Silicon
         if(HAS_MARCH_NATIVE)
-            target_compile_options(nbody PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
+            target_compile_options(nbody_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
         elseif(HAS_MCPU_NATIVE)
-            target_compile_options(nbody PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mcpu=native>)
+            target_compile_options(nbody_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mcpu=native>)
         endif()
     endif()
 endif()
 
 # ---------------------------------------------------------------- testy
-enable_testing()
-add_test(NAME correctness COMMAND nbody --mode test)
+include(CTest)
+if(BUILD_TESTING)
+    add_test(NAME correctness COMMAND nbody --mode test)
+    add_executable(nbody_tests tests/test_simulation.cpp)
+    target_link_libraries(nbody_tests PRIVATE nbody_core)
+    add_test(NAME simulation_edges COMMAND nbody_tests)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME cli_csv COMMAND ${Python3_EXECUTABLE}
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.py $<TARGET_FILE:nbody>)
+        add_test(NAME analysis COMMAND ${Python3_EXECUTABLE}
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analysis.py)
+    endif()
+endif()

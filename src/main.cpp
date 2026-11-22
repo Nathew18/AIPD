@@ -8,10 +8,14 @@
 #include "simulation.hpp"
 
 #include <cmath>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -22,7 +26,7 @@ using namespace nbody;
 namespace {
 
 struct Options {
-    std::string mode = "all";            // seq | omp | cuda | all | test
+    std::string mode = "all";            // seq | omp | cuda | cuda-naive | all | test
     std::vector<long> n = {1024};
     std::vector<long> threads;           // puste = maks. dostępne
     int steps = 10;
@@ -37,7 +41,8 @@ struct Options {
 void print_help() {
     std::cout <<
         "Uzycie: nbody [opcje]\n"
-        "  --mode seq|omp|cuda|all|test  wariant (domyslnie all)\n"
+        "  --mode seq|omp|cuda|cuda-naive|all|test  wariant (domyslnie all)\n"
+        "    cuda = tiling __shared__, cuda-naive = pamiec globalna\n"
         "  --n 1024[,2048,...]           liczba cial (mozna podac liste)\n"
         "  --steps 10                    liczba krokow symulacji\n"
         "  --threads 1,2,4,8             watki OpenMP (domyslnie maks.)\n"
@@ -49,12 +54,33 @@ void print_help() {
         "  --csv plik.csv                dopisz wyniki do pliku zamiast na ekran\n";
 }
 
+template <class T>
+T parse_integer(const std::string& s) {
+    T value{};
+    const auto [end, error] = std::from_chars(s.data(), s.data() + s.size(), value);
+    if (error != std::errc{} || end != s.data() + s.size())
+        throw std::invalid_argument("Niepoprawna liczba calkowita: " + s);
+    return value;
+}
+
+real parse_real(const std::string& s) {
+    std::size_t end = 0;
+    const real value = real(std::stod(s, &end));
+    if (end != s.size() || !std::isfinite(value) || value <= 0)
+        throw std::invalid_argument("Wymagana skonczona dodatnia liczba: " + s);
+    return value;
+}
+
 std::vector<long> parse_list(const std::string& s) {
+    if (s.empty() || s.back() == ',') throw std::invalid_argument("Pusta lista lub element");
     std::vector<long> out;
     std::stringstream ss(s);
     std::string item;
-    while (std::getline(ss, item, ','))
-        if (!item.empty()) out.push_back(std::stol(item));
+    while (std::getline(ss, item, ',')) {
+        const int value = parse_integer<int>(item);
+        if (value <= 0) throw std::invalid_argument("Elementy listy musza byc > 0");
+        out.push_back(value);
+    }
     return out;
 }
 
@@ -70,17 +96,20 @@ Options parse_args(int argc, char** argv) {
         else if (a == "--mode")    o.mode = next();
         else if (a == "--n")       o.n = parse_list(next());
         else if (a == "--threads") o.threads = parse_list(next());
-        else if (a == "--steps")   o.steps = std::stoi(next());
-        else if (a == "--repeats") o.repeats = std::stoi(next());
-        else if (a == "--warmup")  o.warmup = std::stoi(next());
-        else if (a == "--seed")    o.seed = std::stoull(next());
-        else if (a == "--dt")      o.params.dt = real(std::stod(next()));
-        else if (a == "--eps")     o.params.eps = real(std::stod(next()));
+        else if (a == "--steps")   o.steps = parse_integer<int>(next());
+        else if (a == "--repeats") o.repeats = parse_integer<int>(next());
+        else if (a == "--warmup")  o.warmup = parse_integer<int>(next());
+        else if (a == "--seed")    o.seed = parse_integer<std::uint64_t>(next());
+        else if (a == "--dt")      o.params.dt = parse_real(next());
+        else if (a == "--eps")     o.params.eps = parse_real(next());
         else if (a == "--check")   o.check = true;
         else if (a == "--csv")     o.csv = next();
         else throw std::runtime_error("Nieznana opcja: " + a + " (zobacz --help)");
     }
-    if (o.params.eps <= 0) throw std::runtime_error("--eps musi byc > 0");
+    if (o.steps <= 0 || o.repeats <= 0 || o.warmup < 0 ||
+        o.warmup > std::numeric_limits<int>::max() - o.repeats)
+        throw std::invalid_argument("Wymagane steps > 0, repeats > 0, warmup >= 0 (bez przepelnienia)");
+    validate_simulation(Bodies{}, o.params, 0);
     return o;
 }
 
@@ -141,9 +170,12 @@ int run_tests() {
     // 4. CUDA vs sekwencyjna (jeśli dostępna).
     if (cuda_available()) {
         std::printf("\n4) CUDA vs sekwencyjna (%s)\n", cuda_device_name().c_str());
-        Bodies b = start;
-        run_cuda(b, p, steps);
-        t.check("maks. roznica polozen", max_position_diff(ref, b), f ? 1e-3 : 1e-8);
+        for (const auto kernel : {CudaKernel::naive, CudaKernel::tiled}) {
+            Bodies b = start;
+            run_cuda(b, p, steps, nullptr, kernel);
+            t.check(kernel == CudaKernel::naive ? "CUDA naive vs seq" : "CUDA tiled vs seq",
+                    max_position_diff(ref, b), f ? 1e-3 : 1e-8);
+        }
     } else {
         std::printf("\n4) CUDA: pominieto (%s)\n", cuda_device_name().c_str());
     }
@@ -157,27 +189,41 @@ void run_benchmark(const Options& o) {
     std::vector<std::string> modes;
     if (o.mode == "all") {
         modes = {"seq", "omp"};
-        if (cuda_available()) modes.push_back("cuda");
+        if (cuda_available()) { modes.push_back("cuda-naive"); modes.push_back("cuda"); }
         else std::cerr << "[info] CUDA niedostepna - pomijam wariant cuda\n";
-    } else if (o.mode == "seq" || o.mode == "omp" || o.mode == "cuda") {
+    } else if (o.mode == "seq" || o.mode == "omp" || o.mode == "cuda" || o.mode == "cuda-naive") {
+        if ((o.mode == "cuda" || o.mode == "cuda-naive") && !cuda_available())
+            throw std::runtime_error("CUDA niedostepna: " + cuda_device_name());
         modes = {o.mode};
     } else {
         throw std::runtime_error("Nieznany tryb: " + o.mode);
     }
 
     std::ofstream file;
+    const std::string header =
+        "mode,real,n,steps,threads,repeats,median_s,min_s,max_s,mean_s,"
+        "ms_per_step,ginteractions_per_s,energy_rel_drift,max_diff_vs_seq,"
+        "cuda_h2d_s,cuda_kernel_s,cuda_d2h_s,seed,dt,eps";
     bool need_header = true;
     if (!o.csv.empty()) {
         std::ifstream existing(o.csv);
         need_header = !existing.good() || existing.peek() == std::ifstream::traits_type::eof();
+        if (!need_header) {
+            std::string actual;
+            std::getline(existing, actual);
+            if (!actual.empty() && actual.back() == '\r') actual.pop_back();
+            if (actual != header) throw std::runtime_error("Inny format CSV; uzyj nowego pliku: " + o.csv);
+        }
+        existing.close();
+        const auto parent = std::filesystem::path(o.csv).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
         file.open(o.csv, std::ios::app);
         if (!file) throw std::runtime_error("Nie moge otworzyc " + o.csv);
     }
     std::ostream& out = o.csv.empty() ? std::cout : file;
+    out << std::setprecision(10);
     if (need_header)
-        out << "mode,real,n,steps,threads,repeats,median_s,min_s,max_s,mean_s,"
-               "ms_per_step,ginteractions_per_s,energy_rel_drift,max_diff_vs_seq,"
-               "cuda_h2d_s,cuda_kernel_s,cuda_d2h_s\n";
+        out << header << '\n';
 
     std::cerr << "[info] typ: " << real_name() << ", watki OpenMP (maks.): "
               << omp_max_threads() << ", GPU: " << cuda_device_name() << "\n";
@@ -196,6 +242,9 @@ void run_benchmark(const Options& o) {
             std::vector<long> thread_list = {1};
             if (mode == "omp")
                 thread_list = o.threads.empty() ? std::vector<long>{omp_max_threads()} : o.threads;
+#ifndef _OPENMP
+            if (mode == "omp") thread_list = {1};
+#endif
 
             for (long th : thread_list) {
                 std::cerr << "[run] " << mode << " n=" << n
@@ -209,7 +258,8 @@ void run_benchmark(const Options& o) {
                         if (mode == "seq") run_seq(b, o.params, o.steps);
                         else if (mode == "omp") run_omp(b, o.params, o.steps, int(th));
                         else {
-                            run_cuda(b, o.params, o.steps, &ct);
+                            run_cuda(b, o.params, o.steps, &ct,
+                                     mode == "cuda-naive" ? CudaKernel::naive : CudaKernel::tiled);
                             if (run_no++ < o.warmup) return;
                             ct_sum.h2d_s += ct.h2d_s;
                             ct_sum.kernel_s += ct.kernel_s;
@@ -217,27 +267,34 @@ void run_benchmark(const Options& o) {
                         }
                     });
                 const bench::Stats s = bench::summarize(times);
-                const double pairs = double(n) * double(n) * o.steps;
+                // Poczatkowe przyspieszenia i jedno przeliczenie na kazdy krok.
+                const double pairs = double(n) * double(n) * (double(o.steps) + 1.0);
 
                 out << mode << ',' << real_name() << ',' << n << ',' << o.steps << ','
                     << th << ',' << o.repeats << ',' << s.median << ',' << s.min << ','
                     << s.max << ',' << s.mean << ',' << 1000.0 * s.median / o.steps << ','
                     << pairs / s.median / 1e9 << ',';
                 if (o.check) {
-                    out << std::abs((total_energy(b, o.params) - e0) / e0) << ','
-                        << (mode == "seq" ? 0.0 : max_position_diff(reference, b));
+                    const double energy = total_energy(b, o.params);
+                    const double diff = max_position_diff(reference, b);
+                    if (!std::isfinite(energy) || !std::isfinite(diff))
+                        throw std::runtime_error("Symulacja zwrocila NaN/Inf; zmniejsz --dt");
+                    if (e0 != 0) out << std::abs((energy - e0) / e0);
+                    out << ','
+                        << (mode == "seq" ? 0.0 : diff);
                 } else {
                     out << ',';
                 }
                 out << ',';
-                if (mode == "cuda") {
+                if (mode == "cuda" || mode == "cuda-naive") {
                     const double runs = double(o.repeats);
                     out << ct_sum.h2d_s / runs << ',' << ct_sum.kernel_s / runs << ','
                         << ct_sum.d2h_s / runs;
                 } else {
                     out << ",,";
                 }
-                out << '\n' << std::flush;
+                out << ',' << o.seed << ',' << o.params.dt << ',' << o.params.eps << '\n' << std::flush;
+                if (!out) throw std::runtime_error("Blad zapisu CSV");
             }
         }
     }

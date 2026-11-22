@@ -25,10 +25,23 @@ Bodies make_random(std::size_t n, std::uint64_t seed);
 // Dwa ciała o równych masach na orbicie kołowej (okres = 2*pi przy G = 1).
 Bodies make_two_body();
 
+// Weryfikuje parametry i rozmiary tablic przed uruchomieniem dowolnego wariantu.
+void validate_simulation(const Bodies& b, const Params& p, int steps);
+
 // fizyka
 // Przyspieszenie działające na ciało i od wszystkich ciał j z [0, n).
 // Człon j == i daje 0 (dx = 0), więc nie trzeba go pomijać - brak rozgałęzień.
 // Funkcja jest __host__ __device__, więc kernel CUDA może jej użyć 1:1.
+NBODY_HD inline void accumulate_pair(real dx, real dy, real dz, real mass,
+                                     real eps2, real& sx, real& sy, real& sz) {
+    const real r2 = dx * dx + dy * dy + dz * dz + eps2;
+    const real inv_r = real(1) / std::sqrt(r2);
+    const real s = mass * inv_r * inv_r * inv_r;
+    sx += dx * s;
+    sy += dy * s;
+    sz += dz * s;
+}
+
 NBODY_HD inline void accel_on_body(std::size_t i, std::size_t n,
                                    const real* x, const real* y, const real* z,
                                    const real* m, real G, real eps2,
@@ -39,12 +52,7 @@ NBODY_HD inline void accel_on_body(std::size_t i, std::size_t n,
         const real dx = x[j] - xi;
         const real dy = y[j] - yi;
         const real dz = z[j] - zi;
-        const real r2 = dx * dx + dy * dy + dz * dz + eps2;
-        const real inv_r = real(1) / std::sqrt(r2);
-        const real s = m[j] * inv_r * inv_r * inv_r;
-        sx += dx * s;
-        sy += dy * s;
-        sz += dz * s;
+        accumulate_pair(dx, dy, dz, m[j], eps2, sx, sy, sz);
     }
     ax = G * sx;
     ay = G * sy;
@@ -61,8 +69,10 @@ struct CudaTimings {
     double kernel_s = 0; // obliczenia na GPU
     double d2h_s    = 0; // transfer device -> host
 };
+enum class CudaKernel { naive, tiled };
 // Rzuca std::runtime_error, jeśli program zbudowano bez CUDA.
-void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings = nullptr);
+void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings = nullptr,
+              CudaKernel kernel = CudaKernel::tiled);
 bool cuda_available();
 std::string cuda_device_name();
 

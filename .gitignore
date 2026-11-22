@@ -2,3 +2,6 @@ build*/
 cmake-build-*/
 .idea/workspace.xml
 *.csv
+results/
+__pycache__/
+*.pyc
