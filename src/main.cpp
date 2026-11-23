@@ -170,10 +170,10 @@ int run_tests() {
     // 4. CUDA vs sekwencyjna (jeśli dostępna).
     if (cuda_available()) {
         std::printf("\n4) CUDA vs sekwencyjna (%s)\n", cuda_device_name().c_str());
-        for (const auto kernel : {CudaKernel::naive, CudaKernel::tiled}) {
+        for (const auto kernel : {CudaKernel::naive}) {
             Bodies b = start;
             run_cuda(b, p, steps, nullptr, kernel);
-            t.check(kernel == CudaKernel::naive ? "CUDA naive vs seq" : "CUDA tiled vs seq",
+            t.check(kernel == CudaKernel::naive ? "CUDA naive vs seq" : "CUDA  vs seq",
                     max_position_diff(ref, b), f ? 1e-3 : 1e-8);
         }
     } else {
@@ -189,10 +189,10 @@ void run_benchmark(const Options& o) {
     std::vector<std::string> modes;
     if (o.mode == "all") {
         modes = {"seq", "omp"};
-        if (cuda_available()) { modes.push_back("cuda-naive"); modes.push_back("cuda"); }
+        if (cuda_available()) { modes.push_back("cuda-naive"); }
         else std::cerr << "[info] CUDA niedostepna - pomijam wariant cuda\n";
-    } else if (o.mode == "seq" || o.mode == "omp" || o.mode == "cuda" || o.mode == "cuda-naive") {
-        if ((o.mode == "cuda" || o.mode == "cuda-naive") && !cuda_available())
+    } else if (o.mode == "seq" || o.mode == "omp" ||  o.mode == "cuda-naive") {
+        if (( o.mode == "cuda-naive") && !cuda_available())
             throw std::runtime_error("CUDA niedostepna: " + cuda_device_name());
         modes = {o.mode};
     } else {

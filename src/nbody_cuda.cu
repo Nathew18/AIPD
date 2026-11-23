@@ -53,37 +53,6 @@ __global__ void accel_kick_kernel(int n, DeviceBodies d, real G, real eps2, real
     d.vx[i] += ax * h; d.vy[i] += ay * h; d.vz[i] += az * h;
 }
 
-__global__ void accel_kick_tiled_kernel(int n, DeviceBodies d, real G, real eps2, real h) {
-    struct Particle { real x, y, z, m; };
-    __shared__ Particle tile[kBlockSize];
-    const int lane = threadIdx.x;
-    const int i = blockIdx.x * blockDim.x + lane;
-    const bool active = i < n;
-    const real xi = active ? d.x[i] : real(0);
-    const real yi = active ? d.y[i] : real(0);
-    const real zi = active ? d.z[i] : real(0);
-    real sx = 0, sy = 0, sz = 0;
-    // Nieaktywne watki ostatniego bloku tez musza dojsc do obu barier.
-    // Indeks size_t zapobiega przepelnieniu dla ostatniego kafla.
-    for (std::size_t base = 0; base < std::size_t(n); base += kBlockSize) {
-        const std::size_t j = base + lane;
-        if (j < std::size_t(n)) tile[lane] = {d.x[j], d.y[j], d.z[j], d.m[j]};
-        __syncthreads();
-        const int count = int(std::size_t(n) - base < kBlockSize ?
-                              std::size_t(n) - base : kBlockSize);
-        if (active) {
-            for (int k = 0; k < count; ++k)
-                accumulate_pair(tile[k].x - xi, tile[k].y - yi, tile[k].z - zi,
-                                tile[k].m, eps2, sx, sy, sz);
-        }
-        __syncthreads();
-    }
-    if (active) {
-        const real ax = G * sx, ay = G * sy, az = G * sz;
-        d.ax[i] = ax; d.ay[i] = ay; d.az[i] = az;
-        d.vx[i] += ax * h; d.vy[i] += ay * h; d.vz[i] += az * h;
-    }
-}
 
 // v += a * h_kick, potem x += v * h_drift.
 __global__ void kick_drift_kernel(int n, DeviceBodies d, real h_kick, real h_drift) {
@@ -112,7 +81,7 @@ void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings, CudaK
     if (b.size() == 0) return;
     if (b.size() > std::size_t(std::numeric_limits<int>::max()))
         throw std::invalid_argument("CUDA: za duzo cial (limit INT_MAX)");
-    if (kernel != CudaKernel::naive && kernel != CudaKernel::tiled)
+    if (kernel != CudaKernel::naive)
         throw std::invalid_argument("CUDA: nieznany kernel");
     const int n = int(b.size());
     const std::size_t bytes = std::size_t(n) * sizeof(real);
@@ -143,13 +112,15 @@ void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings, CudaK
 
     // --- obliczenia (leapfrog KDK, jak w wersji CPU)
     CUDA_CHECK(cudaEventRecord(e1));
+
     auto accel_kick = [&](real h) {
-        if (kernel == CudaKernel::tiled)
-            accel_kick_tiled_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, h);
-        else
-            accel_kick_kernel<<<grid, kBlockSize>>>(n, d, p.G, eps2, h);
+        accel_kick_kernel<<<grid, kBlockSize>>>(
+            n, d, p.G, eps2, h
+        );
+
         CUDA_CHECK(cudaGetLastError());
     };
+
     accel_kick(real(0));
     for (int s = 0; s < steps; ++s) {
         kick_drift_kernel<<<grid, kBlockSize>>>(n, d, half, p.dt);
