@@ -1,4 +1,4 @@
-// Warianty GPU: kernel podstawowy oraz tiling w pamieci wspoldzielonej.
+// Wariant GPU CUDA naive: odczyty z pamieci globalnej.
 //   * jeden wątek GPU = jedno ciało,
 //   * dane kopiowane na GPU RAZ, wszystkie kroki liczone na karcie,
 //   * osobny pomiar transferów i obliczeń (cudaEvent).
@@ -75,14 +75,12 @@ std::string cuda_device_name() {
     return prop.name;
 }
 
-void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings, CudaKernel kernel) {
+void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings) {
     validate_simulation(b, p, steps);
     if (timings) *timings = {};
     if (b.size() == 0) return;
     if (b.size() > std::size_t(std::numeric_limits<int>::max()))
         throw std::invalid_argument("CUDA: za duzo cial (limit INT_MAX)");
-    if (kernel != CudaKernel::naive)
-        throw std::invalid_argument("CUDA: nieznany kernel");
     const int n = int(b.size());
     const std::size_t bytes = std::size_t(n) * sizeof(real);
     const real eps2 = p.eps * p.eps;

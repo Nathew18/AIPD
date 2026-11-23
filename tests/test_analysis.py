@@ -19,12 +19,12 @@ class AnalysisTests(unittest.TestCase):
     def test_baseline_and_mean_timing(self):
         groups = {(256, "seq", 1): [self.row("seq", 4, 5)],
                   (256, "omp", 2): [self.row("omp", 1, 2, 2)],
-                  (256, "cuda", 1): [self.row("cuda", 0.5, 1)]}
+                  (256, "cuda-naive", 1): [self.row("cuda-naive", 0.5, 1)]}
         result = {r["mode"]: r for r in analyze.summarize(groups)}
         self.assertEqual(result["omp"]["speedup"], 4)
         self.assertEqual(result["omp"]["efficiency"], 2)
-        self.assertEqual(result["cuda"]["speedup"], 8)
-        self.assertAlmostEqual(result["cuda"]["transfer_fraction"], 0.3)
+        self.assertEqual(result["cuda-naive"]["speedup"], 8)
+        self.assertAlmostEqual(result["cuda-naive"]["transfer_fraction"], 0.3)
 
     def test_missing_reference_stays_empty(self):
         result = analyze.summarize({(256, "omp", 2): [self.row("omp", 1, 1, 2)]})[0]

@@ -9,12 +9,11 @@
 - [x] Implementacja sekwencyjna O(N²).
 - [x] Implementacja OpenMP z podziałem po ciałach, bez współdzielonych zapisów.
 - [x] CUDA podstawowa: jeden wątek na ciało, odczyty globalne.
-- [x] CUDA zoptymalizowana: kafle 256 ciał w pamięci współdzielonej.
 - [x] Bezpieczna obsługa niepełnych bloków CUDA, pustych układów i błędów.
 - [x] Jednorazowy transfer danych przed/po całej symulacji; osobne czasy faz.
 - [x] Benchmark: rozgrzewka, powtórzenia, mediana/min/max/średnia, CSV.
 - [x] Walidacja argumentów, metadane eksperymentu i kontrola formatu CSV.
-- [x] Testy fizyki, pełnego stanu, granic kafli, CLI/CSV i analizy.
+- [x] Testy fizyki, pełnego stanu, granic bloków, CLI/CSV i analizy.
 - [x] Skrypt serii pomiarowej i wykresy czasu, przyspieszenia, efektywności, transferów.
 - [x] CI CPU: Windows/Linux, float/double, również bez OpenMP.
 - [x] Instrukcje budowania, testów i pomiarów w README.
@@ -25,7 +24,7 @@ Poniższe zadania wymagają wykonania pomiarów i interpretacji; nie są brakami
 
 - [ ] Pełna seria N = 256, 512, 1024 … 65536.
 - [ ] OpenMP dla 1, 2, 4, 8 i 16 wątków.
-- [ ] CUDA naive vs tiled, porównanie float/double w osobnych seriach.
+- [ ] Porównanie seq, omp i CUDA naive oraz float/double w osobnych seriach.
 - [ ] Profilowanie Nsight Systems / Nsight Compute.
 - [ ] Wyznaczenie punktu, od którego GPU jest szybsze od CPU.
 - [ ] Omówienie udziału transferów i kosztów stałych GPU.

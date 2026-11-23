@@ -41,7 +41,7 @@ int main() {
         const bool gpu = cuda_available();
         const double cpu_tol = sizeof(real) == 4 ? 1e-5 : 1e-12;
         const double gpu_tol = sizeof(real) == 4 ? 3e-4 : 1e-10;
-        // Granice kafli oraz puste i jednoelementowe uklady. Kontrola calego
+        // Granice blokow oraz puste i jednoelementowe uklady. Kontrola calego
         // stanu wykrywa tez bledy ostatniego kick, niewidoczne w polozeniach.
         for (std::size_t n : {0, 1, 2, 31, 255, 256, 257, 513}) {
             Bodies initial = make_random(n, 42);
@@ -55,10 +55,10 @@ int main() {
                     run_omp(b, p, steps, threads);
                     compare(ref, b, cpu_tol);
                 }
-                if (gpu) for (auto kernel : {CudaKernel::naive, CudaKernel::tiled}) {
+                if (gpu) {
                     Bodies b = initial;
                     CudaTimings timing;
-                    run_cuda(b, p, steps, &timing, kernel);
+                    run_cuda(b, p, steps, &timing);
                     compare(ref, b, gpu_tol);
                     require(timing.h2d_s >= 0 && timing.kernel_s >= 0 && timing.d2h_s >= 0,
                             "Ujemny czas CUDA");
@@ -88,7 +88,7 @@ int main() {
         Bodies nan = b; nan.x[0] = std::numeric_limits<real>::quiet_NaN();
         require(std::isinf(max_position_diff(b, nan)), "NaN ukryty przez porownanie");
         std::cout << "Stan CPU i przypadki brzegowe OK; CUDA: "
-                  << (gpu ? "oba kernele OK" : "pominieta") << '\n';
+                  << (gpu ? "kernel naive OK" : "pominieta") << '\n';
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

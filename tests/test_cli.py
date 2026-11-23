@@ -21,7 +21,7 @@ for args in [
     ("--threads", "0"), ("--steps", "0"), ("--steps", "-2"),
     ("--repeats", "0"), ("--warmup", "-1"), ("--seed", "-1"),
     ("--dt", "nan"), ("--dt", "inf"), ("--dt", "0.1junk"),
-    ("--eps", "0"), ("--eps", "1e-200"), ("--mode", "unknown"),
+    ("--eps", "0"), ("--eps", "1e-200"), ("--mode", "unknown"), ("--mode", "cuda"),
     ("--warmup", "2147483647", "--repeats", "1"), ("--n",),
 ]:
     run(*args, ok=False)
@@ -36,10 +36,9 @@ with tempfile.TemporaryDirectory() as tmp:
     with output.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     modes = {row["mode"] for row in rows}
-    assert {"seq", "omp"} <= modes
-    assert ("cuda" in modes) == ("cuda-naive" in modes)
+    assert {"seq", "omp"} <= modes <= {"seq", "omp", "cuda-naive"}
     omp_threads = {row["threads"] for row in rows if row["mode"] == "omp"}
-    expected = 4 * (1 + len(omp_threads) + (2 if "cuda" in modes else 0))
+    expected = 4 * (1 + len(omp_threads) + (1 if "cuda-naive" in modes else 0))
     assert len(rows) == expected, len(rows)
     for row in rows:
         assert None not in row, row
@@ -54,7 +53,6 @@ with tempfile.TemporaryDirectory() as tmp:
     output.write_text("old,format\n", encoding="utf-8")
     run(*args, ok=False)
     assert output.read_text(encoding="utf-8") == "old,format\n"
-    if "cuda" not in modes:
-        run("--mode", "cuda", "--n", "1", ok=False)
+    if "cuda-naive" not in modes:
         run("--mode", "cuda-naive", "--n", "1", ok=False)
 print("CLI i CSV OK")

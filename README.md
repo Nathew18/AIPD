@@ -1,16 +1,15 @@
 # Symulacja grawitacyjnego problemu N-ciał
 
 Projekt na przedmiot Akceleracja i obliczanie danych. Porównuje bezpośrednią
-metodę O(N²) z integratorem leapfrog (kick-drift-kick) w czterech wariantach:
+metodę O(N²) z integratorem leapfrog (kick-drift-kick) w trzech wariantach:
 
 | Tryb | Implementacja |
 |---|---|
 | `seq` | CPU sekwencyjnie, punkt odniesienia |
 | `omp` | CPU + OpenMP, równoległa pętla po ciałach |
 | `cuda-naive` | CUDA, jeden wątek na ciało, dane z pamięci globalnej |
-| `cuda` | CUDA, kafle po 256 ciał w pamięci `__shared__` |
 
-`all` uruchamia wszystkie dostępne warianty. Bez CUDA pomija oba warianty GPU.
+`all` uruchamia wszystkie dostępne warianty. Bez CUDA pomija wariant GPU.
 Bez OpenMP `omp` działa na jednym wątku. Dane mają układ SoA; wszystkie warianty
 używają tego samego wzoru siły, softeningu oraz identycznych warunków początkowych.
 
@@ -52,13 +51,13 @@ ctest --test-dir build-ninja --output-on-failure
 
 | Opcja CMake | Domyślnie | Znaczenie |
 |---|---|---|
-| `USE_CUDA` | `OFF` | budowanie obu wariantów CUDA |
+| `USE_CUDA` | `OFF` | budowanie wariantu CUDA naive |
 | `NBODY_USE_FLOAT` | `ON` | `float`; ustaw `OFF` dla `double` |
 | `NBODY_NATIVE` | `ON` | instrukcje CPU: `-march=native` lub MSVC `/arch:AVX2` |
 | `CMAKE_CUDA_ARCHITECTURES` | `native` | architektura GPU; można ustawić jawnie |
 | `BUILD_TESTING` | `ON` | testy CTest |
 
-Testy obejmują orbitę dwóch ciał, energię, pęd, zgodność CPU/OpenMP/obu kerneli
+Testy obejmują orbitę dwóch ciał, energię, pęd, zgodność CPU/OpenMP/kernela
 CUDA oraz pełny stan (pozycje, prędkości, przyspieszenia). Przypadki brzegowe:
 N = 0, 1, 2, 31, 255, 256, 257, 513 i 0/1/7 kroków. Testy GPU wykonują się,
 gdy karta jest dostępna; brak GPU jest jawnie zgłaszany. Python 3.10+ dodaje
@@ -71,7 +70,6 @@ Przykłady dla Windows (Linux/macOS: zastąp ścieżkę programu przez `./build/
 
 ```bat
 build\Release\nbody.exe --mode all --n 256,1024,4096 --threads 1,2,4,8,16 --steps 10 --repeats 5 --check --csv results\benchmark.csv
-build\Release\nbody.exe --mode cuda --n 65536 --steps 100
 build\Release\nbody.exe --mode cuda-naive --n 65536 --steps 100
 build\Release\nbody.exe --help
 ```
@@ -132,7 +130,7 @@ Udział transferów w analizie = (średni H2D + średni D2H) / średni czas cał
 ## Struktura i dalsza praca
 
 - `include/`: stan SoA, wspólny wzór siły, interfejs i timer.
-- `src/`: inicjalizacja, fizyka, CLI i cztery implementacje.
+- `src/`: inicjalizacja, fizyka, CLI i trzy implementacje: seq, omp, cuda-naive.
 - `tests/`: testy stanu, argumentów, CSV i obliczeń analitycznych.
 - `scripts/`: seria pomiarów oraz analiza i wykresy.
 - `PLAN.md`: stan realizacji i zadania eksperymentalne do sprawozdania.
@@ -140,7 +138,7 @@ Udział transferów w analizie = (średni H2D + średni D2H) / średni czas cał
 Profilowanie, gdy dostępne są narzędzia NVIDIA:
 
 ```bat
-nsys profile -o nbody-profile build\Release\nbody.exe --mode cuda --n 65536 --steps 100 --repeats 1
-ncu --set full build\Release\nbody.exe --mode cuda --n 65536 --steps 10 --repeats 1 --warmup 0
+nsys profile -o nbody-profile build\Release\nbody.exe --mode cuda-naive --n 65536 --steps 100 --repeats 1
+ncu --set full build\Release\nbody.exe --mode cuda-naive --n 65536 --steps 10 --repeats 1 --warmup 0
 compute-sanitizer --tool memcheck --error-exitcode 1 build\Release\nbody_tests.exe
 ```

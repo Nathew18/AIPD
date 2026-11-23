@@ -31,7 +31,7 @@ def load_measurements(paths):
                     any(not math.isfinite(x) or x <= 0 for x in times) or
                     any(not math.isfinite(x) or x <= 0 for x in config[3:])):
                     raise ValueError(f"{path}:{line}: niepoprawne parametry lub czasy")
-                if row["mode"] not in {"seq", "omp", "cuda", "cuda-naive"}:
+                if row["mode"] not in {"seq", "omp", "cuda-naive"}:
                     raise ValueError(f"{path}:{line}: nieznany wariant")
                 key = (n, row["mode"], threads)
                 groups.setdefault(key, []).append(row)
@@ -54,7 +54,7 @@ def summarize(groups):
                       efficiency=speedup / threads if mode == "omp" and speedup is not None else None,
                       h2d_fraction=None, kernel_fraction=None, d2h_fraction=None,
                       transfer_fraction=None)
-        if mode.startswith("cuda"):
+        if mode == "cuda-naive":
             means = [float(r["mean_s"]) for r in rows]
             for source, target in (("h2d", "h2d_fraction"), ("kernel", "kernel_fraction"),
                                    ("d2h", "d2h_fraction")):
@@ -92,10 +92,9 @@ def plot(summary, destination, config):
             axes[1, 0].plot([r["threads"] for r in rows], [r["efficiency"] for r in rows], "o-", label=f"N={n}")
     axes[1, 0].axhline(1, color="gray", linestyle="--")
     axes[1, 0].set(xlabel="Wątki OpenMP", ylabel="Przyspieszenie / wątki", title="Efektywność OpenMP")
-    for mode in ("cuda", "cuda-naive"):
-        rows = sorted((r for r in summary if r["mode"] == mode), key=lambda r: r["n"])
-        if rows:
-            axes[1, 1].semilogx([r["n"] for r in rows], [100 * r["transfer_fraction"] for r in rows], "o-", label=mode)
+    rows = sorted((r for r in summary if r["mode"] == "cuda-naive"), key=lambda r: r["n"])
+    if rows:
+        axes[1, 1].semilogx([r["n"] for r in rows], [100 * r["transfer_fraction"] for r in rows], "o-", label="cuda-naive")
     axes[1, 1].set(xlabel="Liczba ciał N", ylabel="Transfery / średni czas całości [%]", title="Koszt transferów CUDA")
     for ax in axes.flat:
         ax.grid(True, alpha=0.25)

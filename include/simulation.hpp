@@ -69,10 +69,8 @@ struct CudaTimings {
     double kernel_s = 0; // obliczenia na GPU
     double d2h_s    = 0; // transfer device -> host
 };
-enum class CudaKernel { naive, tiled };
 // Rzuca std::runtime_error, jeśli program zbudowano bez CUDA.
-void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings = nullptr,
-              CudaKernel kernel = CudaKernel::tiled);
+void run_cuda(Bodies& b, const Params& p, int steps, CudaTimings* timings = nullptr);
 bool cuda_available();
 std::string cuda_device_name();
 

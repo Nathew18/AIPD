@@ -26,7 +26,7 @@ using namespace nbody;
 namespace {
 
 struct Options {
-    std::string mode = "all";            // seq | omp | cuda | cuda-naive | all | test
+    std::string mode = "all";            // seq | omp | cuda-naive | all | test
     std::vector<long> n = {1024};
     std::vector<long> threads;           // puste = maks. dostępne
     int steps = 10;
@@ -41,8 +41,8 @@ struct Options {
 void print_help() {
     std::cout <<
         "Uzycie: nbody [opcje]\n"
-        "  --mode seq|omp|cuda|cuda-naive|all|test  wariant (domyslnie all)\n"
-        "    cuda = tiling __shared__, cuda-naive = pamiec globalna\n"
+        "  --mode seq|omp|cuda-naive|all|test  wariant (domyslnie all)\n"
+        "    cuda-naive = jeden watek GPU na cialo, pamiec globalna\n"
         "  --n 1024[,2048,...]           liczba cial (mozna podac liste)\n"
         "  --steps 10                    liczba krokow symulacji\n"
         "  --threads 1,2,4,8             watki OpenMP (domyslnie maks.)\n"
@@ -170,12 +170,9 @@ int run_tests() {
     // 4. CUDA vs sekwencyjna (jeśli dostępna).
     if (cuda_available()) {
         std::printf("\n4) CUDA vs sekwencyjna (%s)\n", cuda_device_name().c_str());
-        for (const auto kernel : {CudaKernel::naive}) {
-            Bodies b = start;
-            run_cuda(b, p, steps, nullptr, kernel);
-            t.check(kernel == CudaKernel::naive ? "CUDA naive vs seq" : "CUDA  vs seq",
-                    max_position_diff(ref, b), f ? 1e-3 : 1e-8);
-        }
+        Bodies b = start;
+        run_cuda(b, p, steps);
+        t.check("CUDA naive vs seq", max_position_diff(ref, b), f ? 1e-3 : 1e-8);
     } else {
         std::printf("\n4) CUDA: pominieto (%s)\n", cuda_device_name().c_str());
     }
@@ -190,9 +187,9 @@ void run_benchmark(const Options& o) {
     if (o.mode == "all") {
         modes = {"seq", "omp"};
         if (cuda_available()) { modes.push_back("cuda-naive"); }
-        else std::cerr << "[info] CUDA niedostepna - pomijam wariant cuda\n";
-    } else if (o.mode == "seq" || o.mode == "omp" ||  o.mode == "cuda-naive") {
-        if (( o.mode == "cuda-naive") && !cuda_available())
+        else std::cerr << "[info] CUDA niedostepna - pomijam wariant cuda-naive\n";
+    } else if (o.mode == "seq" || o.mode == "omp" || o.mode == "cuda-naive") {
+        if (o.mode == "cuda-naive" && !cuda_available())
             throw std::runtime_error("CUDA niedostepna: " + cuda_device_name());
         modes = {o.mode};
     } else {
@@ -258,8 +255,7 @@ void run_benchmark(const Options& o) {
                         if (mode == "seq") run_seq(b, o.params, o.steps);
                         else if (mode == "omp") run_omp(b, o.params, o.steps, int(th));
                         else {
-                            run_cuda(b, o.params, o.steps, &ct,
-                                     mode == "cuda-naive" ? CudaKernel::naive : CudaKernel::tiled);
+                            run_cuda(b, o.params, o.steps, &ct);
                             if (run_no++ < o.warmup) return;
                             ct_sum.h2d_s += ct.h2d_s;
                             ct_sum.kernel_s += ct.kernel_s;
@@ -286,7 +282,7 @@ void run_benchmark(const Options& o) {
                     out << ',';
                 }
                 out << ',';
-                if (mode == "cuda" || mode == "cuda-naive") {
+                if (mode == "cuda-naive") {
                     const double runs = double(o.repeats);
                     out << ct_sum.h2d_s / runs << ',' << ct_sum.kernel_s / runs << ','
                         << ct_sum.d2h_s / runs;
